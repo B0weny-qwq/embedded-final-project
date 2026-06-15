@@ -1,0 +1,10 @@
+[package]
+name = "stm32-temp-host"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+eframe = "0.27"
+egui = "0.27"
+egui_plot = "0.27"
+serialport = "4.3"
