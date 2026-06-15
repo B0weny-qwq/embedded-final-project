@@ -7,30 +7,31 @@
 #include "board.h"
 #include "stm32f1xx_hal.h"
 
-#define USB_EP0 0U
-#define USB_EP_CDC_CMD 1U
-#define USB_EP_CDC_OUT 2U
-#define USB_EP_CDC_IN 3U
+#define USB_EP0_SIZE 64U
+#define USB_CDC_CMD_EP 0x81U
+#define USB_CDC_OUT_EP 0x02U
+#define USB_CDC_IN_EP 0x83U
+#define USB_CDC_DATA_SIZE 64U
+#define USB_CDC_CMD_SIZE 8U
 
-#define EP0_SIZE 64U
-#define CDC_DATA_SIZE 64U
-#define CDC_CMD_SIZE 8U
-
-#define USB_BTABLE_ADDR 0x00U
-#define PMA_EP0_RX 0x40U
-#define PMA_EP0_TX 0x80U
-#define PMA_CDC_CMD_TX 0xC0U
-#define PMA_CDC_OUT_RX 0x100U
-#define PMA_CDC_IN_TX 0x140U
+#define PMA_EP0_OUT 0x40U
+#define PMA_EP0_IN 0x80U
+#define PMA_CDC_CMD_IN 0xC0U
+#define PMA_CDC_OUT 0x100U
+#define PMA_CDC_IN 0x140U
 
 #define USB_REQ_TYPE_MASK 0x60U
 #define USB_REQ_STANDARD 0x00U
 #define USB_REQ_CLASS 0x20U
-#define USB_REQ_GET_DESCRIPTOR 0x06U
-#define USB_REQ_SET_ADDRESS 0x05U
-#define USB_REQ_SET_CONFIGURATION 0x09U
-#define USB_REQ_GET_CONFIGURATION 0x08U
 #define USB_REQ_GET_STATUS 0x00U
+#define USB_REQ_CLEAR_FEATURE 0x01U
+#define USB_REQ_SET_FEATURE 0x03U
+#define USB_REQ_SET_ADDRESS 0x05U
+#define USB_REQ_GET_DESCRIPTOR 0x06U
+#define USB_REQ_GET_CONFIGURATION 0x08U
+#define USB_REQ_SET_CONFIGURATION 0x09U
+#define USB_REQ_GET_INTERFACE 0x0AU
+#define USB_REQ_SET_INTERFACE 0x0BU
 #define USB_REQ_SET_LINE_CODING 0x20U
 #define USB_REQ_GET_LINE_CODING 0x21U
 #define USB_REQ_SET_CONTROL_LINE_STATE 0x22U
@@ -40,25 +41,6 @@
 #define USB_DESC_STRING 0x03U
 #define USB_DESC_DEVICE_QUALIFIER 0x06U
 
-#define USB_EP_STAT_RX 0x3000U
-#define USB_EP_STAT_TX 0x0030U
-
-#define EP_TYPE_BULK 0x0000U
-#define EP_TYPE_CONTROL 0x0200U
-#define EP_TYPE_INTERRUPT 0x0600U
-
-#define EP_RX_DIS 0x0000U
-#define EP_RX_STALL 0x1000U
-#define EP_RX_NAK 0x2000U
-#define EP_RX_VALID 0x3000U
-#define EP_TX_DIS 0x0000U
-#define EP_TX_STALL 0x0010U
-#define EP_TX_NAK 0x0020U
-#define EP_TX_VALID 0x0030U
-
-#define EF_GPIO_CRL_CFG(pin_index, mode_bits, cnf_bits) \
-    (((uint32_t)(mode_bits) | ((uint32_t)(cnf_bits) << 2U)) << ((pin_index) * 4U))
-
 typedef struct {
     uint8_t bmRequestType;
     uint8_t bRequest;
@@ -67,14 +49,19 @@ typedef struct {
     uint16_t wLength;
 } SetupPacket;
 
+PCD_HandleTypeDef hpcd_usb_fs;
+
 static volatile uint8_t configured;
 static volatile uint8_t tx_busy;
-static volatile uint8_t pending_address;
-static uint8_t control_in[128];
+static uint8_t control_buf[128];
 static uint16_t control_len;
 static uint16_t control_pos;
-static uint8_t ep0_out_expect;
+static uint8_t control_zlp;
+static uint8_t ep0_out_buf[USB_EP0_SIZE];
+static uint8_t cdc_rx_buf[USB_CDC_DATA_SIZE];
+static uint8_t cdc_tx_packet[USB_CDC_DATA_SIZE];
 static uint8_t line_coding[7] = {0x00, 0xC2, 0x01, 0x00, 0x00, 0x00, 0x08};
+static uint8_t ep0_out_request;
 
 static uint8_t rx_queue[APP_USB_RX_QUEUE_SIZE];
 static volatile uint16_t rx_head;
@@ -82,10 +69,9 @@ static volatile uint16_t rx_tail;
 static uint8_t tx_queue[APP_USB_TX_QUEUE_SIZE];
 static volatile uint16_t tx_head;
 static volatile uint16_t tx_tail;
-static uint8_t tx_packet[CDC_DATA_SIZE];
 
 static const uint8_t device_desc[] = {
-    18, USB_DESC_DEVICE, 0x00, 0x02, 0x02, 0x00, 0x00, EP0_SIZE,
+    18, USB_DESC_DEVICE, 0x00, 0x02, 0x02, 0x00, 0x00, USB_EP0_SIZE,
     0x83, 0x04, 0x40, 0x57, 0x00, 0x01, 1, 2, 3, 1,
 };
 
@@ -96,15 +82,15 @@ static const uint8_t config_desc[] = {
     5, 0x24, 0x01, 0x00, 1,
     4, 0x24, 0x02, 0x02,
     5, 0x24, 0x06, 0, 1,
-    7, 5, 0x80 | USB_EP_CDC_CMD, 0x03, CDC_CMD_SIZE, 0, 16,
+    7, 5, USB_CDC_CMD_EP, 0x03, USB_CDC_CMD_SIZE, 0, 16,
     9, 4, 1, 0, 2, 0x0A, 0x00, 0x00, 0,
-    7, 5, USB_EP_CDC_OUT, 0x02, CDC_DATA_SIZE, 0, 0,
-    7, 5, 0x80 | USB_EP_CDC_IN, 0x02, CDC_DATA_SIZE, 0, 0,
+    7, 5, USB_CDC_OUT_EP, 0x02, USB_CDC_DATA_SIZE, 0, 0,
+    7, 5, USB_CDC_IN_EP, 0x02, USB_CDC_DATA_SIZE, 0, 0,
 };
 
 static const uint8_t lang_id_desc[] = {4, USB_DESC_STRING, 0x09, 0x04};
 static const uint8_t manufacturer_desc[] = {
-    18, USB_DESC_STRING, 'E', 0, 'm', 0, 'b', 0, 'e', 0, 'd', 0, 'F', 0, 'i', 0, 'r', 0, 'e', 0,
+    20, USB_DESC_STRING, 'E', 0, 'm', 0, 'b', 0, 'e', 0, 'd', 0, 'F', 0, 'i', 0, 'r', 0, 'e', 0,
 };
 static const uint8_t product_desc[] = {
     46, USB_DESC_STRING,
@@ -115,123 +101,21 @@ static const uint8_t serial_desc[] = {
     18, USB_DESC_STRING, '0', 0, '0', 0, '0', 0, '1', 0, 'F', 0, '1', 0, '0', 0, '3', 0,
 };
 
-static volatile uint16_t *ep_reg(uint8_t ep)
+static void parse_setup(SetupPacket *setup)
 {
-    return (volatile uint16_t *)((uint32_t)USB + ep * 4U);
-}
-
-static volatile uint16_t *pma16(uint16_t byte_addr)
-{
-    return (volatile uint16_t *)(USB_PMAADDR + ((uint32_t)byte_addr * 2U));
-}
-
-static void pma_write(uint16_t addr, const uint8_t *data, uint16_t len)
-{
-    volatile uint16_t *dst = pma16(addr);
-    for (uint16_t i = 0; i < len; i += 2U) {
-        uint16_t value = data[i];
-        if ((i + 1U) < len) {
-            value |= (uint16_t)data[i + 1U] << 8;
-        }
-        *dst++ = value;
-    }
-}
-
-static void pma_read(uint16_t addr, uint8_t *data, uint16_t len)
-{
-    volatile uint16_t *src = pma16(addr);
-    for (uint16_t i = 0; i < len; i += 2U) {
-        uint16_t value = *src++;
-        data[i] = (uint8_t)value;
-        if ((i + 1U) < len) {
-            data[i + 1U] = (uint8_t)(value >> 8);
-        }
-    }
-}
-
-static void set_rx_count(uint8_t ep, uint16_t count)
-{
-    volatile uint16_t *reg = pma16(USB_BTABLE_ADDR + ep * 8U + 6U);
-    if (count > 62U) {
-        uint16_t blocks = (uint16_t)((count + 31U) / 32U);
-        *reg = (uint16_t)(0x8000U | ((blocks - 1U) << 10));
-    } else {
-        uint16_t blocks = (uint16_t)((count + 1U) / 2U);
-        *reg = (uint16_t)(blocks << 10);
-    }
-}
-
-static void set_tx_count(uint8_t ep, uint16_t count)
-{
-    *pma16(USB_BTABLE_ADDR + ep * 8U + 2U) = count;
-}
-
-static uint16_t rx_count(uint8_t ep)
-{
-    return (uint16_t)(*pma16(USB_BTABLE_ADDR + ep * 8U + 6U) & 0x03FFU);
-}
-
-static void set_ep_addr(uint8_t ep, uint16_t tx_addr, uint16_t rx_addr)
-{
-    *pma16(USB_BTABLE_ADDR + ep * 8U + 0U) = tx_addr;
-    *pma16(USB_BTABLE_ADDR + ep * 8U + 4U) = rx_addr;
-}
-
-static void set_stat_tx(uint8_t ep, uint16_t stat)
-{
-    volatile uint16_t *reg = ep_reg(ep);
-    uint16_t value = *reg;
-    value &= (uint16_t)(USB_EP_TYPE_MASK | USB_EP_KIND | USB_EPADDR_FIELD | USB_EP_STAT_RX);
-    value ^= (uint16_t)((value & USB_EP_STAT_TX) ^ stat);
-    *reg = value;
-}
-
-static void set_stat_rx(uint8_t ep, uint16_t stat)
-{
-    volatile uint16_t *reg = ep_reg(ep);
-    uint16_t value = *reg;
-    value &= (uint16_t)(USB_EP_TYPE_MASK | USB_EP_KIND | USB_EPADDR_FIELD | USB_EP_STAT_TX);
-    value ^= (uint16_t)((value & USB_EP_STAT_RX) ^ stat);
-    *reg = value;
-}
-
-static void clear_ctr_tx(uint8_t ep)
-{
-    volatile uint16_t *reg = ep_reg(ep);
-    uint16_t value = *reg;
-    value &= (uint16_t)(USB_EP_TYPE_MASK | USB_EP_KIND | USB_EPADDR_FIELD | USB_EP_STAT_RX | USB_EP_STAT_TX);
-    *reg = (uint16_t)(value & ~USB_EP_CTR_TX);
-}
-
-static void clear_ctr_rx(uint8_t ep)
-{
-    volatile uint16_t *reg = ep_reg(ep);
-    uint16_t value = *reg;
-    value &= (uint16_t)(USB_EP_TYPE_MASK | USB_EP_KIND | USB_EPADDR_FIELD | USB_EP_STAT_RX | USB_EP_STAT_TX);
-    *reg = (uint16_t)(value & ~USB_EP_CTR_RX);
-}
-
-static void ep_init(uint8_t ep, uint16_t type, uint16_t tx_addr, uint16_t rx_addr, uint16_t rx_size)
-{
-    set_ep_addr(ep, tx_addr, rx_addr);
-    set_rx_count(ep, rx_size);
-    *ep_reg(ep) = (uint16_t)(type | ep);
-    set_stat_tx(ep, EP_TX_NAK);
-    set_stat_rx(ep, rx_size ? EP_RX_VALID : EP_RX_DIS);
-}
-
-static void start_tx(uint8_t ep, uint16_t pma, const uint8_t *data, uint16_t len)
-{
-    pma_write(pma, data, len);
-    set_tx_count(ep, len);
-    set_stat_tx(ep, EP_TX_VALID);
+    const uint8_t *bytes = (const uint8_t *)hpcd_usb_fs.Setup;
+    setup->bmRequestType = bytes[0];
+    setup->bRequest = bytes[1];
+    setup->wValue = (uint16_t)bytes[2] | ((uint16_t)bytes[3] << 8);
+    setup->wIndex = (uint16_t)bytes[4] | ((uint16_t)bytes[5] << 8);
+    setup->wLength = (uint16_t)bytes[6] | ((uint16_t)bytes[7] << 8);
 }
 
 static void ep0_send_next(void)
 {
     uint16_t remaining = (uint16_t)(control_len - control_pos);
-    uint16_t chunk = remaining > EP0_SIZE ? EP0_SIZE : remaining;
-    start_tx(USB_EP0, PMA_EP0_TX, &control_in[control_pos], chunk);
+    uint16_t chunk = remaining > USB_EP0_SIZE ? USB_EP0_SIZE : remaining;
+    (void)HAL_PCD_EP_Transmit(&hpcd_usb_fs, 0x80U, &control_buf[control_pos], chunk);
     control_pos = (uint16_t)(control_pos + chunk);
 }
 
@@ -240,115 +124,51 @@ static void ep0_send(const uint8_t *data, uint16_t len, uint16_t requested)
     if (len > requested) {
         len = requested;
     }
-    if (len > sizeof(control_in)) {
-        len = sizeof(control_in);
+    if (len > sizeof(control_buf)) {
+        len = sizeof(control_buf);
     }
-    memcpy(control_in, data, len);
+    if (len > 0U) {
+        memcpy(control_buf, data, len);
+    }
     control_len = len;
-    control_pos = 0;
+    control_pos = 0U;
+    control_zlp = (len < requested && (len % USB_EP0_SIZE) == 0U) ? 1U : 0U;
     ep0_send_next();
 }
 
 static void ep0_status_in(void)
 {
-    control_len = 0;
-    control_pos = 0;
-    start_tx(USB_EP0, PMA_EP0_TX, control_in, 0);
+    control_len = 0U;
+    control_pos = 0U;
+    control_zlp = 0U;
+    (void)HAL_PCD_EP_Transmit(&hpcd_usb_fs, 0x80U, control_buf, 0U);
+}
+
+static void ep0_status_out(void)
+{
+    (void)HAL_PCD_EP_Receive(&hpcd_usb_fs, 0x00U, ep0_out_buf, 0U);
 }
 
 static void ep0_stall(void)
 {
-    set_stat_tx(USB_EP0, EP_TX_STALL);
-    set_stat_rx(USB_EP0, EP_RX_STALL);
+    (void)HAL_PCD_EP_SetStall(&hpcd_usb_fs, 0x80U);
+    (void)HAL_PCD_EP_SetStall(&hpcd_usb_fs, 0x00U);
 }
 
-static void parse_setup(SetupPacket *setup)
+static void cdc_open_endpoints(void)
 {
-    uint8_t bytes[8];
-    pma_read(PMA_EP0_RX, bytes, sizeof(bytes));
-    setup->bmRequestType = bytes[0];
-    setup->bRequest = bytes[1];
-    setup->wValue = (uint16_t)bytes[2] | ((uint16_t)bytes[3] << 8);
-    setup->wIndex = (uint16_t)bytes[4] | ((uint16_t)bytes[5] << 8);
-    setup->wLength = (uint16_t)bytes[6] | ((uint16_t)bytes[7] << 8);
+    (void)HAL_PCD_EP_Open(&hpcd_usb_fs, USB_CDC_CMD_EP, USB_CDC_CMD_SIZE, EP_TYPE_INTR);
+    (void)HAL_PCD_EP_Open(&hpcd_usb_fs, USB_CDC_OUT_EP, USB_CDC_DATA_SIZE, EP_TYPE_BULK);
+    (void)HAL_PCD_EP_Open(&hpcd_usb_fs, USB_CDC_IN_EP, USB_CDC_DATA_SIZE, EP_TYPE_BULK);
+    (void)HAL_PCD_EP_Receive(&hpcd_usb_fs, USB_CDC_OUT_EP, cdc_rx_buf, USB_CDC_DATA_SIZE);
 }
 
-static void handle_setup(void)
+static void cdc_close_endpoints(void)
 {
-    SetupPacket setup;
-    parse_setup(&setup);
-    ep0_out_expect = 0;
-
-    if ((setup.bmRequestType & USB_REQ_TYPE_MASK) == USB_REQ_STANDARD) {
-        switch (setup.bRequest) {
-        case USB_REQ_GET_DESCRIPTOR: {
-            uint8_t type = (uint8_t)(setup.wValue >> 8);
-            uint8_t index = (uint8_t)setup.wValue;
-            if (type == USB_DESC_DEVICE) {
-                ep0_send(device_desc, sizeof(device_desc), setup.wLength);
-            } else if (type == USB_DESC_CONFIGURATION) {
-                ep0_send(config_desc, sizeof(config_desc), setup.wLength);
-            } else if (type == USB_DESC_STRING && index == 0) {
-                ep0_send(lang_id_desc, sizeof(lang_id_desc), setup.wLength);
-            } else if (type == USB_DESC_STRING && index == 1) {
-                ep0_send(manufacturer_desc, sizeof(manufacturer_desc), setup.wLength);
-            } else if (type == USB_DESC_STRING && index == 2) {
-                ep0_send(product_desc, sizeof(product_desc), setup.wLength);
-            } else if (type == USB_DESC_STRING && index == 3) {
-                ep0_send(serial_desc, sizeof(serial_desc), setup.wLength);
-            } else if (type == USB_DESC_DEVICE_QUALIFIER) {
-                ep0_stall();
-            } else {
-                ep0_stall();
-            }
-            break;
-        }
-        case USB_REQ_SET_ADDRESS:
-            pending_address = (uint8_t)(setup.wValue & 0x7FU);
-            ep0_status_in();
-            break;
-        case USB_REQ_SET_CONFIGURATION:
-            configured = (uint8_t)(setup.wValue & 0xFFU);
-            ep_init(USB_EP_CDC_CMD, EP_TYPE_INTERRUPT, PMA_CDC_CMD_TX, 0, 0);
-            set_stat_tx(USB_EP_CDC_CMD, EP_TX_NAK);
-            ep_init(USB_EP_CDC_OUT, EP_TYPE_BULK, 0, PMA_CDC_OUT_RX, CDC_DATA_SIZE);
-            ep_init(USB_EP_CDC_IN, EP_TYPE_BULK, PMA_CDC_IN_TX, 0, 0);
-            set_stat_tx(USB_EP_CDC_IN, EP_TX_NAK);
-            tx_busy = 0;
-            ep0_status_in();
-            break;
-        case USB_REQ_GET_CONFIGURATION:
-            control_in[0] = configured;
-            ep0_send(control_in, 1, setup.wLength);
-            break;
-        case USB_REQ_GET_STATUS:
-            control_in[0] = 0;
-            control_in[1] = 0;
-            ep0_send(control_in, 2, setup.wLength);
-            break;
-        default:
-            ep0_stall();
-            break;
-        }
-    } else if ((setup.bmRequestType & USB_REQ_TYPE_MASK) == USB_REQ_CLASS) {
-        switch (setup.bRequest) {
-        case USB_REQ_GET_LINE_CODING:
-            ep0_send(line_coding, sizeof(line_coding), setup.wLength);
-            break;
-        case USB_REQ_SET_LINE_CODING:
-            ep0_out_expect = sizeof(line_coding);
-            set_stat_rx(USB_EP0, EP_RX_VALID);
-            break;
-        case USB_REQ_SET_CONTROL_LINE_STATE:
-            ep0_status_in();
-            break;
-        default:
-            ep0_stall();
-            break;
-        }
-    } else {
-        ep0_stall();
-    }
+    (void)HAL_PCD_EP_Close(&hpcd_usb_fs, USB_CDC_CMD_EP);
+    (void)HAL_PCD_EP_Close(&hpcd_usb_fs, USB_CDC_OUT_EP);
+    (void)HAL_PCD_EP_Close(&hpcd_usb_fs, USB_CDC_IN_EP);
+    tx_busy = 0;
 }
 
 static void queue_rx(const uint8_t *data, uint16_t len)
@@ -370,81 +190,268 @@ static void cdc_try_tx(void)
     }
 
     uint16_t len = 0;
-    while (tx_tail != tx_head && len < CDC_DATA_SIZE) {
-        tx_packet[len++] = tx_queue[tx_tail];
+    while (tx_tail != tx_head && len < USB_CDC_DATA_SIZE) {
+        cdc_tx_packet[len++] = tx_queue[tx_tail];
         tx_tail = (uint16_t)((tx_tail + 1U) % APP_USB_TX_QUEUE_SIZE);
     }
+
     tx_busy = 1;
-    start_tx(USB_EP_CDC_IN, PMA_CDC_IN_TX, tx_packet, len);
-}
-
-static void handle_ep0_rx(void)
-{
-    uint16_t reg = *ep_reg(USB_EP0);
-    if (reg & USB_EP_SETUP) {
-        clear_ctr_rx(USB_EP0);
-        handle_setup();
-        return;
+    if (HAL_PCD_EP_Transmit(&hpcd_usb_fs, USB_CDC_IN_EP, cdc_tx_packet, len) != HAL_OK) {
+        tx_busy = 0;
     }
-
-    uint16_t count = rx_count(USB_EP0);
-    if (ep0_out_expect && count == ep0_out_expect) {
-        pma_read(PMA_EP0_RX, line_coding, sizeof(line_coding));
-        ep0_out_expect = 0;
-        clear_ctr_rx(USB_EP0);
-        ep0_status_in();
-    } else {
-        clear_ctr_rx(USB_EP0);
-        set_stat_rx(USB_EP0, EP_RX_VALID);
-    }
-}
-
-static void handle_ep0_tx(void)
-{
-    clear_ctr_tx(USB_EP0);
-    if (pending_address) {
-        USB->DADDR = (uint16_t)(USB_DADDR_EF | pending_address);
-        pending_address = 0;
-    }
-    if (control_pos < control_len) {
-        ep0_send_next();
-    } else {
-        set_stat_rx(USB_EP0, EP_RX_VALID);
-    }
-}
-
-static void handle_cdc_out(void)
-{
-    uint8_t data[CDC_DATA_SIZE];
-    uint16_t count = rx_count(USB_EP_CDC_OUT);
-    if (count > CDC_DATA_SIZE) {
-        count = CDC_DATA_SIZE;
-    }
-    pma_read(PMA_CDC_OUT_RX, data, count);
-    queue_rx(data, count);
-    clear_ctr_rx(USB_EP_CDC_OUT);
-    set_stat_rx(USB_EP_CDC_OUT, EP_RX_VALID);
 }
 
 static bool pins_are_initialized(void)
 {
-    const uint32_t pd6_out_od_low = EF_GPIO_CRL_CFG(6U, 2U, 1U);
-    const uint32_t gpiod_mask = GPIO_CRL_CNF6 | GPIO_CRL_MODE6;
-
     if ((RCC->APB2ENR & RCC_APB2ENR_IOPDEN) == 0U ||
         (RCC->APB1ENR & RCC_APB1ENR_USBEN) == 0U) {
         return false;
     }
-    if ((GPIOD->CRL & gpiod_mask) != pd6_out_od_low) {
-        return false;
+    return HAL_GPIO_ReadPin(USB_DISCONNECT_GPIO_Port, USB_DISCONNECT_Pin) == GPIO_PIN_RESET;
+}
+
+static void handle_standard_request(const SetupPacket *setup)
+{
+    switch (setup->bRequest) {
+    case USB_REQ_GET_DESCRIPTOR: {
+        uint8_t type = (uint8_t)(setup->wValue >> 8);
+        uint8_t index = (uint8_t)setup->wValue;
+        if (type == USB_DESC_DEVICE) {
+            ep0_send(device_desc, sizeof(device_desc), setup->wLength);
+        } else if (type == USB_DESC_CONFIGURATION) {
+            ep0_send(config_desc, sizeof(config_desc), setup->wLength);
+        } else if (type == USB_DESC_STRING && index == 0U) {
+            ep0_send(lang_id_desc, sizeof(lang_id_desc), setup->wLength);
+        } else if (type == USB_DESC_STRING && index == 1U) {
+            ep0_send(manufacturer_desc, sizeof(manufacturer_desc), setup->wLength);
+        } else if (type == USB_DESC_STRING && index == 2U) {
+            ep0_send(product_desc, sizeof(product_desc), setup->wLength);
+        } else if (type == USB_DESC_STRING && index == 3U) {
+            ep0_send(serial_desc, sizeof(serial_desc), setup->wLength);
+        } else if (type == USB_DESC_DEVICE_QUALIFIER) {
+            ep0_stall();
+        } else {
+            ep0_stall();
+        }
+        break;
     }
-    return (GPIOD->ODR & USB_DISCONNECT_Pin) == 0U;
+    case USB_REQ_SET_ADDRESS:
+        (void)HAL_PCD_SetAddress(&hpcd_usb_fs, (uint8_t)(setup->wValue & 0x7FU));
+        ep0_status_in();
+        break;
+    case USB_REQ_SET_CONFIGURATION:
+        configured = (uint8_t)(setup->wValue & 0xFFU);
+        if (configured != 0U) {
+            cdc_open_endpoints();
+        } else {
+            cdc_close_endpoints();
+        }
+        ep0_status_in();
+        break;
+    case USB_REQ_GET_CONFIGURATION:
+        control_buf[0] = configured;
+        ep0_send(control_buf, 1U, setup->wLength);
+        break;
+    case USB_REQ_GET_STATUS:
+        control_buf[0] = 0U;
+        control_buf[1] = 0U;
+        ep0_send(control_buf, 2U, setup->wLength);
+        break;
+    case USB_REQ_GET_INTERFACE:
+        control_buf[0] = 0U;
+        ep0_send(control_buf, 1U, setup->wLength);
+        break;
+    case USB_REQ_SET_INTERFACE:
+    case USB_REQ_CLEAR_FEATURE:
+    case USB_REQ_SET_FEATURE:
+        ep0_status_in();
+        break;
+    default:
+        ep0_stall();
+        break;
+    }
+}
+
+static void handle_class_request(const SetupPacket *setup)
+{
+    switch (setup->bRequest) {
+    case USB_REQ_GET_LINE_CODING:
+        ep0_send(line_coding, sizeof(line_coding), setup->wLength);
+        break;
+    case USB_REQ_SET_LINE_CODING:
+        ep0_out_request = USB_REQ_SET_LINE_CODING;
+        (void)HAL_PCD_EP_Receive(&hpcd_usb_fs, 0x00U, ep0_out_buf, sizeof(line_coding));
+        break;
+    case USB_REQ_SET_CONTROL_LINE_STATE:
+        ep0_status_in();
+        break;
+    default:
+        ep0_stall();
+        break;
+    }
+}
+
+void HAL_PCD_MspInit(PCD_HandleTypeDef *hpcd)
+{
+    if (hpcd->Instance != USB) {
+        return;
+    }
+
+    __HAL_RCC_GPIOA_CLK_ENABLE();
+    __HAL_RCC_USB_CLK_ENABLE();
+
+    HAL_NVIC_SetPriority(USB_LP_CAN1_RX0_IRQn, 1U, 0U);
+    HAL_NVIC_EnableIRQ(USB_LP_CAN1_RX0_IRQn);
+}
+
+void HAL_PCD_MspDeInit(PCD_HandleTypeDef *hpcd)
+{
+    if (hpcd->Instance != USB) {
+        return;
+    }
+
+    HAL_NVIC_DisableIRQ(USB_LP_CAN1_RX0_IRQn);
+    __HAL_RCC_USB_CLK_DISABLE();
+}
+
+void HAL_PCD_ResetCallback(PCD_HandleTypeDef *hpcd)
+{
+    if (hpcd->Instance != USB) {
+        return;
+    }
+
+    configured = 0;
+    tx_busy = 0;
+    control_len = 0U;
+    control_pos = 0U;
+    control_zlp = 0U;
+    ep0_out_request = 0;
+    (void)HAL_PCD_EP_Open(hpcd, 0x00U, USB_EP0_SIZE, EP_TYPE_CTRL);
+    (void)HAL_PCD_EP_Open(hpcd, 0x80U, USB_EP0_SIZE, EP_TYPE_CTRL);
+}
+
+void HAL_PCD_SetupStageCallback(PCD_HandleTypeDef *hpcd)
+{
+    if (hpcd->Instance != USB) {
+        return;
+    }
+
+    SetupPacket setup;
+    parse_setup(&setup);
+    ep0_out_request = 0;
+
+    if ((setup.bmRequestType & USB_REQ_TYPE_MASK) == USB_REQ_STANDARD) {
+        handle_standard_request(&setup);
+    } else if ((setup.bmRequestType & USB_REQ_TYPE_MASK) == USB_REQ_CLASS) {
+        handle_class_request(&setup);
+    } else {
+        ep0_stall();
+    }
+}
+
+void HAL_PCD_DataOutStageCallback(PCD_HandleTypeDef *hpcd, uint8_t epnum)
+{
+    if (hpcd->Instance != USB) {
+        return;
+    }
+
+    if (epnum == 0U) {
+        if (ep0_out_request == USB_REQ_SET_LINE_CODING &&
+            HAL_PCD_EP_GetRxCount(hpcd, 0x00U) == sizeof(line_coding)) {
+            memcpy(line_coding, ep0_out_buf, sizeof(line_coding));
+            ep0_out_request = 0;
+            ep0_status_in();
+        } else {
+            ep0_out_request = 0;
+            ep0_status_in();
+        }
+    } else if (epnum == (USB_CDC_OUT_EP & 0x7FU)) {
+        uint32_t count = HAL_PCD_EP_GetRxCount(hpcd, USB_CDC_OUT_EP);
+        if (count > USB_CDC_DATA_SIZE) {
+            count = USB_CDC_DATA_SIZE;
+        }
+        queue_rx(cdc_rx_buf, (uint16_t)count);
+        (void)HAL_PCD_EP_Receive(hpcd, USB_CDC_OUT_EP, cdc_rx_buf, USB_CDC_DATA_SIZE);
+    }
+}
+
+void HAL_PCD_DataInStageCallback(PCD_HandleTypeDef *hpcd, uint8_t epnum)
+{
+    if (hpcd->Instance != USB) {
+        return;
+    }
+
+    if (epnum == (USB_CDC_IN_EP & 0x7FU)) {
+        tx_busy = 0;
+        cdc_try_tx();
+    } else if (epnum == 0U) {
+        if (control_pos < control_len) {
+            ep0_send_next();
+        } else if (control_zlp) {
+            control_zlp = 0U;
+            (void)HAL_PCD_EP_Transmit(hpcd, 0x80U, control_buf, 0U);
+        } else {
+            ep0_status_out();
+        }
+    }
+}
+
+void HAL_PCD_SuspendCallback(PCD_HandleTypeDef *hpcd)
+{
+    (void)hpcd;
+}
+
+void HAL_PCD_ResumeCallback(PCD_HandleTypeDef *hpcd)
+{
+    (void)hpcd;
+}
+
+void HAL_PCD_ConnectCallback(PCD_HandleTypeDef *hpcd)
+{
+    (void)hpcd;
+}
+
+void HAL_PCD_DisconnectCallback(PCD_HandleTypeDef *hpcd)
+{
+    if (hpcd->Instance == USB) {
+        configured = 0;
+        tx_busy = 0;
+    }
+}
+
+void HAL_PCD_SOFCallback(PCD_HandleTypeDef *hpcd)
+{
+    (void)hpcd;
+}
+
+void HAL_PCD_ISOOUTIncompleteCallback(PCD_HandleTypeDef *hpcd, uint8_t epnum)
+{
+    (void)hpcd;
+    (void)epnum;
+}
+
+void HAL_PCD_ISOINIncompleteCallback(PCD_HandleTypeDef *hpcd, uint8_t epnum)
+{
+    (void)hpcd;
+    (void)epnum;
+}
+
+void UsbCdc_IrqHandler(void)
+{
+    HAL_PCD_IRQHandler(&hpcd_usb_fs);
 }
 
 void UsbCdc_Init(void)
 {
+    configured = 0;
+    tx_busy = 0;
+    rx_head = rx_tail = tx_head = tx_tail = 0;
+    control_len = 0U;
+    control_pos = 0U;
+    control_zlp = 0U;
+    ep0_out_request = 0;
+
     __HAL_RCC_GPIOD_CLK_ENABLE();
-    __HAL_RCC_USB_CLK_ENABLE();
 
     GPIO_InitTypeDef gpio = {0};
     gpio.Pin = USB_DISCONNECT_Pin;
@@ -454,19 +461,31 @@ void UsbCdc_Init(void)
     HAL_GPIO_Init(USB_DISCONNECT_GPIO_Port, &gpio);
 
     HAL_GPIO_WritePin(USB_DISCONNECT_GPIO_Port, USB_DISCONNECT_Pin, GPIO_PIN_SET);
-    HAL_Delay(20);
+    HAL_Delay(20U);
 
-    USB->CNTR = USB_CNTR_FRES;
-    USB->CNTR = 0;
-    USB->BTABLE = USB_BTABLE_ADDR;
-    USB->ISTR = 0;
-    USB->DADDR = USB_DADDR_EF;
+    hpcd_usb_fs.Instance = USB;
+    hpcd_usb_fs.Init.dev_endpoints = 8U;
+    hpcd_usb_fs.Init.speed = PCD_SPEED_FULL;
+    hpcd_usb_fs.Init.ep0_mps = PCD_EP0MPS_64;
+    hpcd_usb_fs.Init.phy_itface = PCD_PHY_EMBEDDED;
+    hpcd_usb_fs.Init.Sof_enable = DISABLE;
+    hpcd_usb_fs.Init.low_power_enable = DISABLE;
+    hpcd_usb_fs.Init.lpm_enable = DISABLE;
+    hpcd_usb_fs.Init.battery_charging_enable = DISABLE;
 
-    ep_init(USB_EP0, EP_TYPE_CONTROL, PMA_EP0_TX, PMA_EP0_RX, EP0_SIZE);
-    set_stat_tx(USB_EP0, EP_TX_NAK);
-    configured = 0;
-    tx_busy = 0;
-    rx_head = rx_tail = tx_head = tx_tail = 0;
+    if (HAL_PCD_Init(&hpcd_usb_fs) != HAL_OK) {
+        Error_Handler();
+    }
+
+    (void)HAL_PCDEx_PMAConfig(&hpcd_usb_fs, 0x00U, PCD_SNG_BUF, PMA_EP0_OUT);
+    (void)HAL_PCDEx_PMAConfig(&hpcd_usb_fs, 0x80U, PCD_SNG_BUF, PMA_EP0_IN);
+    (void)HAL_PCDEx_PMAConfig(&hpcd_usb_fs, USB_CDC_CMD_EP, PCD_SNG_BUF, PMA_CDC_CMD_IN);
+    (void)HAL_PCDEx_PMAConfig(&hpcd_usb_fs, USB_CDC_OUT_EP, PCD_SNG_BUF, PMA_CDC_OUT);
+    (void)HAL_PCDEx_PMAConfig(&hpcd_usb_fs, USB_CDC_IN_EP, PCD_SNG_BUF, PMA_CDC_IN);
+
+    if (HAL_PCD_Start(&hpcd_usb_fs) != HAL_OK) {
+        Error_Handler();
+    }
 
     HAL_GPIO_WritePin(USB_DISCONNECT_GPIO_Port, USB_DISCONNECT_Pin, GPIO_PIN_RESET);
     if (!pins_are_initialized()) {
@@ -476,36 +495,6 @@ void UsbCdc_Init(void)
 
 void UsbCdc_Poll(void)
 {
-    uint16_t istr = USB->ISTR;
-    while (istr & USB_ISTR_CTR) {
-        uint8_t ep = (uint8_t)(istr & USB_ISTR_EP_ID);
-        uint16_t reg = *ep_reg(ep);
-        if ((reg & USB_EP_CTR_RX) != 0U) {
-            if (ep == USB_EP0) {
-                handle_ep0_rx();
-            } else if (ep == USB_EP_CDC_OUT) {
-                handle_cdc_out();
-            } else {
-                clear_ctr_rx(ep);
-            }
-        }
-        if ((reg & USB_EP_CTR_TX) != 0U) {
-            if (ep == USB_EP0) {
-                handle_ep0_tx();
-            } else if (ep == USB_EP_CDC_IN) {
-                tx_busy = 0;
-                clear_ctr_tx(ep);
-            } else {
-                clear_ctr_tx(ep);
-            }
-        }
-        istr = USB->ISTR;
-    }
-
-    if (USB->ISTR & USB_ISTR_RESET) {
-        USB->ISTR = (uint16_t)~USB_ISTR_RESET;
-        UsbCdc_Init();
-    }
     cdc_try_tx();
 }
 

@@ -1,4 +1,5 @@
 #include "stm32f1xx_hal.h"
+#include "usb_cdc_port.h"
 
 void SysTick_Handler(void)
 {
@@ -43,4 +44,9 @@ void DebugMon_Handler(void)
 
 void PendSV_Handler(void)
 {
+}
+
+void USB_LP_CAN1_RX0_IRQHandler(void)
+{
+    UsbCdc_IrqHandler();
 }

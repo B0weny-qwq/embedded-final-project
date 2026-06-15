@@ -28,10 +28,13 @@ add_executable(firmware.elf
     ${HAL_SRC_DIR}/stm32f1xx_hal_flash_ex.c
     ${HAL_SRC_DIR}/stm32f1xx_hal_gpio.c
     ${HAL_SRC_DIR}/stm32f1xx_hal_gpio_ex.c
+    ${HAL_SRC_DIR}/stm32f1xx_hal_pcd.c
+    ${HAL_SRC_DIR}/stm32f1xx_hal_pcd_ex.c
     ${HAL_SRC_DIR}/stm32f1xx_hal_pwr.c
     ${HAL_SRC_DIR}/stm32f1xx_hal_rcc.c
     ${HAL_SRC_DIR}/stm32f1xx_hal_rcc_ex.c
     ${HAL_SRC_DIR}/stm32f1xx_hal_tim.c
+    ${HAL_SRC_DIR}/stm32f1xx_ll_usb.c
 )
 
 target_include_directories(firmware.elf PRIVATE

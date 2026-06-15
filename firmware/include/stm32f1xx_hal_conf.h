@@ -10,8 +10,12 @@
 #define HAL_FLASH_MODULE_ENABLED
 #define HAL_GPIO_MODULE_ENABLED
 #define HAL_PWR_MODULE_ENABLED
+#define HAL_PCD_MODULE_ENABLED
 #define HAL_RCC_MODULE_ENABLED
 #define HAL_TIM_MODULE_ENABLED
+
+#define USE_HAL_PCD_REGISTER_CALLBACKS 0U
+#define USE_USB_DOUBLE_BUFFER 0U
 
 #define HSE_VALUE 8000000U
 #define HSE_STARTUP_TIMEOUT 100U
@@ -32,6 +36,7 @@
 #include "stm32f1xx_hal_exti.h"
 #include "stm32f1xx_hal_flash.h"
 #include "stm32f1xx_hal_gpio.h"
+#include "stm32f1xx_hal_pcd.h"
 #include "stm32f1xx_hal_pwr.h"
 #include "stm32f1xx_hal_rcc.h"
 #include "stm32f1xx_hal_tim.h"
