@@ -433,7 +433,7 @@ static bool pins_are_initialized(void)
 {
     const uint32_t pa11_af_pp_high = EF_GPIO_CRH_CFG(11U, 3U, 2U);
     const uint32_t pa12_af_pp_high = EF_GPIO_CRH_CFG(12U, 3U, 2U);
-    const uint32_t pd3_out_pp_low = EF_GPIO_CRL_CFG(3U, 2U, 0U);
+    const uint32_t pd3_out_od_low = EF_GPIO_CRL_CFG(3U, 2U, 1U);
     const uint32_t gpioa_mask = GPIO_CRH_CNF11 | GPIO_CRH_MODE11 |
                                 GPIO_CRH_CNF12 | GPIO_CRH_MODE12;
     const uint32_t gpiod_mask = GPIO_CRL_CNF3 | GPIO_CRL_MODE3;
@@ -446,10 +446,10 @@ static bool pins_are_initialized(void)
     if ((GPIOA->CRH & gpioa_mask) != (pa11_af_pp_high | pa12_af_pp_high)) {
         return false;
     }
-    if ((GPIOD->CRL & gpiod_mask) != pd3_out_pp_low) {
+    if ((GPIOD->CRL & gpiod_mask) != pd3_out_od_low) {
         return false;
     }
-    return (GPIOD->ODR & USB_DISCONNECT_Pin) != 0U;
+    return (GPIOD->ODR & USB_DISCONNECT_Pin) == 0U;
 }
 
 void UsbCdc_Init(void)
@@ -466,14 +466,14 @@ void UsbCdc_Init(void)
     HAL_GPIO_Init(GPIOA, &gpio);
 
     gpio.Pin = USB_DISCONNECT_Pin;
-    gpio.Mode = GPIO_MODE_OUTPUT_PP;
+    gpio.Mode = GPIO_MODE_OUTPUT_OD;
     gpio.Pull = GPIO_NOPULL;
     gpio.Speed = GPIO_SPEED_FREQ_LOW;
     HAL_GPIO_Init(USB_DISCONNECT_GPIO_Port, &gpio);
 
-    HAL_GPIO_WritePin(USB_DISCONNECT_GPIO_Port, USB_DISCONNECT_Pin, GPIO_PIN_RESET);
-    HAL_Delay(20);
     HAL_GPIO_WritePin(USB_DISCONNECT_GPIO_Port, USB_DISCONNECT_Pin, GPIO_PIN_SET);
+    HAL_Delay(20);
+    HAL_GPIO_WritePin(USB_DISCONNECT_GPIO_Port, USB_DISCONNECT_Pin, GPIO_PIN_RESET);
     if (!pins_are_initialized()) {
         Error_Handler();
     }
