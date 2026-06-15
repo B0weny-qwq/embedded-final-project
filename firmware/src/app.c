@@ -21,6 +21,8 @@ static BeepMode beep_mode = BEEP_MODE_AUTO;
 static int32_t raw_cx100;
 static int32_t filtered_cx100;
 static uint32_t last_sample_ms;
+static uint32_t last_key_scan_ms;
+static uint32_t last_output_ms;
 static char rx_line[80];
 static uint8_t rx_len;
 
@@ -38,10 +40,10 @@ static void apply_outputs(void)
 
     if (led_mode == LED_MODE_AUTO) {
         if (alarm_state.active) {
-            bool on = ((now / 120U) % 2U) == 0U;
+            bool on = ((now / APP_ALARM_LED_BLINK_HALF_PERIOD_MS) % 2U) == 0U;
             BspLed_ApplyMode(on ? LED_MODE_RED : LED_MODE_OFF, 255);
         } else {
-            BspLed_ApplyMode(LED_MODE_GREEN, triangle_brightness(now, 2400U));
+            BspLed_ApplyMode(LED_MODE_GREEN, triangle_brightness(now, APP_NORMAL_LED_BREATH_PERIOD_MS));
         }
     } else {
         BspLed_ApplyMode(led_mode, 255);
@@ -51,7 +53,8 @@ static void apply_outputs(void)
     if (beep_mode == BEEP_MODE_ON) {
         beep_on = true;
     } else if (beep_mode == BEEP_MODE_AUTO && alarm_state.active && !alarm_state.silenced) {
-        beep_on = (now % 1000U) < 180U || ((now + 300U) % 1000U) < 180U;
+        beep_on = (now % APP_ALARM_BEEP_PERIOD_MS) < APP_ALARM_BEEP_ON_MS ||
+                  ((now + APP_ALARM_BEEP_SECOND_OFFSET_MS) % APP_ALARM_BEEP_PERIOD_MS) < APP_ALARM_BEEP_ON_MS;
     }
     BspBeep_Set(beep_on);
 }
@@ -133,6 +136,8 @@ void App_Init(void)
     Filter_Init(&filter_state);
     Alarm_Init(&alarm_state, APP_ALARM_THRESHOLD_CX100, APP_RECOVERY_THRESHOLD_CX100);
     last_sample_ms = HAL_GetTick();
+    last_key_scan_ms = last_sample_ms;
+    last_output_ms = last_sample_ms;
 }
 
 void App_Tick(void)
@@ -140,16 +145,23 @@ void App_Tick(void)
     UsbCdc_Poll();
     process_usb_rx();
 
-    if (BspKey_K1PressedEdge()) {
-        App_AckAlarm();
+    uint32_t now = HAL_GetTick();
+    if ((now - last_key_scan_ms) >= APP_KEY_SCAN_PERIOD_MS) {
+        last_key_scan_ms += APP_KEY_SCAN_PERIOD_MS;
+        if (BspKey_K1PressedEdge()) {
+            App_AckAlarm();
+        }
     }
 
-    uint32_t now = HAL_GetTick();
-    if ((now - last_sample_ms) >= APP_REPORT_PERIOD_MS) {
-        last_sample_ms += APP_REPORT_PERIOD_MS;
+    if ((now - last_sample_ms) >= APP_SAMPLE_PERIOD_MS) {
+        last_sample_ms += APP_SAMPLE_PERIOD_MS;
         sample_and_report();
     }
-    apply_outputs();
+
+    if ((now - last_output_ms) >= APP_OUTPUT_PERIOD_MS) {
+        last_output_ms += APP_OUTPUT_PERIOD_MS;
+        apply_outputs();
+    }
 }
 
 void App_SetThreshold(int32_t threshold_cx100)

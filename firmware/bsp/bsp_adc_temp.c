@@ -4,6 +4,20 @@
 
 static ADC_HandleTypeDef hadc1;
 
+static bool adc_is_initialized(void)
+{
+    if ((RCC->APB2ENR & RCC_APB2ENR_ADC1EN) == 0U) {
+        return false;
+    }
+    if (hadc1.Instance != ADC1) {
+        return false;
+    }
+    if ((ADC1->CR2 & ADC_CR2_TSVREFE) == 0U) {
+        return false;
+    }
+    return (ADC1->SQR3 & ADC_SQR3_SQ1) == (ADC_CHANNEL_TEMPSENSOR & ADC_SQR3_SQ1);
+}
+
 void BspAdcTemp_Init(void)
 {
     __HAL_RCC_ADC1_CLK_ENABLE();
@@ -28,6 +42,9 @@ void BspAdcTemp_Init(void)
     }
 
     HAL_ADCEx_Calibration_Start(&hadc1);
+    if (!adc_is_initialized()) {
+        Error_Handler();
+    }
 }
 
 uint32_t BspAdcTemp_ReadRaw(void)

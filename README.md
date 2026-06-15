@@ -91,6 +91,51 @@ Use the board's USB Device Mini USB connector for CDC communication. The CH340 U
 
 The board buzzer is active, so the alarm should be implemented as a rhythm/pattern. Accurate musical notes require an external passive buzzer.
 
+## B-Class Business Logic
+
+| Requirement | Firmware / Host behavior |
+| --- | --- |
+| Realtime chip-temperature acquisition | ADC1 samples the STM32F103VET6 internal temperature sensor every 100 ms. |
+| USB virtual serial upload | Firmware sends one text telemetry frame every 100 ms over USB CDC. |
+| Host realtime curve | Rust host parses raw and filtered temperatures and plots them as curves. |
+| Curve smoothing | Firmware applies EWMA filtering with alpha = 0.15. |
+| Normal LED behavior | Green LED breathes with a 2400 ms full cycle. |
+| Over-temperature LED behavior | Red LED fast blinks with a 120 ms half-period. |
+| Over-temperature buzzer behavior | Active buzzer uses two 180 ms beeps in each 1000 ms cycle. |
+| Alarm clear | Alarm clears after filtered temperature drops to 42.00 C, or K1 / host ACK silences the current buzzer alarm. |
+| Host alarm prompt | Host shows alarm when telemetry `alarm` is `1`. |
+| Host output control | Host sends `CMD,LED,...` and `CMD,BEEP,...` to control LED and buzzer modes. |
+
+## Event Periods
+
+| Event | Period |
+| --- | ---: |
+| USB CDC poll | Every main-loop pass |
+| USB command parse | Every main-loop pass |
+| K1 scan | 10 ms |
+| Temperature sample | 100 ms |
+| EWMA filter update | 100 ms |
+| Alarm threshold check | 100 ms |
+| USB telemetry report | 100 ms |
+| LED/buzzer output refresh | 10 ms |
+| Normal LED breathing cycle | 2400 ms |
+| Alarm LED blink half-period | 120 ms |
+| Alarm buzzer cycle | 1000 ms |
+
+## Host Compatibility
+
+Firmware telemetry is compatible with `host/src/protocol.rs`.
+
+| Field | Firmware output | Rust host parsing |
+| --- | --- | --- |
+| Frame | `T` | `parts[0] == "T"` |
+| Field count | 7 fields | `parts.len() == 7` |
+| Raw temperature | centi-degrees C | divided by 100.0 |
+| Filtered temperature | centi-degrees C | divided by 100.0 |
+| Alarm | `0` or `1` | `parts[4] == "1"` |
+| LED mode | `AUTO/OFF/RED/GREEN/BLUE/WHITE` | same strings |
+| Buzzer mode | `AUTO/ON/OFF` | same strings |
+
 ## USB Application Protocol
 
 Initial protocol: newline-delimited ASCII text.

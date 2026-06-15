@@ -4,6 +4,9 @@
 
 static TIM_HandleTypeDef htim3;
 
+#define EF_GPIO_CRL_CFG(pin_index, mode_bits, cnf_bits) \
+    (((uint32_t)(mode_bits) | ((uint32_t)(cnf_bits) << 2U)) << ((pin_index) * 4U))
+
 static uint32_t scale(uint8_t brightness)
 {
     return (uint32_t)brightness * 10U;
@@ -13,6 +16,27 @@ static void set_channel(uint32_t channel, bool enabled, uint8_t brightness)
 {
     uint32_t compare = enabled ? scale(255U - brightness) : 2550U;
     __HAL_TIM_SET_COMPARE(&htim3, channel, compare);
+}
+
+static bool pins_are_initialized(void)
+{
+    const uint32_t pb0_af_pp_low = EF_GPIO_CRL_CFG(0U, 2U, 2U);
+    const uint32_t pb1_af_pp_low = EF_GPIO_CRL_CFG(1U, 2U, 2U);
+    const uint32_t pb5_af_pp_low = EF_GPIO_CRL_CFG(5U, 2U, 2U);
+    const uint32_t crl_mask = GPIO_CRL_CNF0 | GPIO_CRL_MODE0 |
+                              GPIO_CRL_CNF1 | GPIO_CRL_MODE1 |
+                              GPIO_CRL_CNF5 | GPIO_CRL_MODE5;
+    const uint32_t crl_expect = pb0_af_pp_low | pb1_af_pp_low | pb5_af_pp_low;
+
+    if ((RCC->APB2ENR & RCC_APB2ENR_IOPBEN) == 0U ||
+        (RCC->APB2ENR & RCC_APB2ENR_AFIOEN) == 0U ||
+        (RCC->APB1ENR & RCC_APB1ENR_TIM3EN) == 0U) {
+        return false;
+    }
+    if ((AFIO->MAPR & AFIO_MAPR_TIM3_REMAP) != AFIO_MAPR_TIM3_REMAP_PARTIALREMAP) {
+        return false;
+    }
+    return (GPIOB->CRL & crl_mask) == crl_expect;
 }
 
 void BspLed_Init(void)
@@ -55,6 +79,9 @@ void BspLed_Init(void)
     HAL_TIM_PWM_Start(&htim3, TIM_CHANNEL_3);
     HAL_TIM_PWM_Start(&htim3, TIM_CHANNEL_4);
     BspLed_SetColorRaw(0, 0, 0);
+    if (!pins_are_initialized()) {
+        Error_Handler();
+    }
 }
 
 void BspLed_SetColorRaw(uint8_t red, uint8_t green, uint8_t blue)
