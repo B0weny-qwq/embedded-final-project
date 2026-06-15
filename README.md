@@ -60,7 +60,7 @@ scripts/flash.sh
 | K2 | PC13 | Pressed = high |
 | USB D- | PA11 | Native USB Device |
 | USB D+ | PA12 | Native USB Device |
-| USB soft disconnect | PD3 | From Wildfire USB device example |
+| USB soft disconnect | PD6 | Board USB pull-up control (`USB_E`) |
 
 Use the board's USB Device Mini USB connector for CDC communication. The CH340 USB-to-UART connector is a separate USART1 path and is only a fallback/debug option.
 

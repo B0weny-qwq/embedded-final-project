@@ -22,7 +22,7 @@
 #define USB_DP_GPIO_Port GPIOA
 #define USB_DP_Pin GPIO_PIN_12
 #define USB_DISCONNECT_GPIO_Port GPIOD
-#define USB_DISCONNECT_Pin GPIO_PIN_3
+#define USB_DISCONNECT_Pin GPIO_PIN_6
 
 typedef enum {
     LED_MODE_AUTO = 0,

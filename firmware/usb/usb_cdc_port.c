@@ -428,14 +428,14 @@ static void handle_cdc_out(void)
 
 static bool pins_are_initialized(void)
 {
-    const uint32_t pd3_out_od_low = EF_GPIO_CRL_CFG(3U, 2U, 1U);
-    const uint32_t gpiod_mask = GPIO_CRL_CNF3 | GPIO_CRL_MODE3;
+    const uint32_t pd6_out_od_low = EF_GPIO_CRL_CFG(6U, 2U, 1U);
+    const uint32_t gpiod_mask = GPIO_CRL_CNF6 | GPIO_CRL_MODE6;
 
     if ((RCC->APB2ENR & RCC_APB2ENR_IOPDEN) == 0U ||
         (RCC->APB1ENR & RCC_APB1ENR_USBEN) == 0U) {
         return false;
     }
-    if ((GPIOD->CRL & gpiod_mask) != pd3_out_od_low) {
+    if ((GPIOD->CRL & gpiod_mask) != pd6_out_od_low) {
         return false;
     }
     return (GPIOD->ODR & USB_DISCONNECT_Pin) == 0U;
