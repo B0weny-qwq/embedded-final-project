@@ -59,9 +59,6 @@
 #define EF_GPIO_CRL_CFG(pin_index, mode_bits, cnf_bits) \
     (((uint32_t)(mode_bits) | ((uint32_t)(cnf_bits) << 2U)) << ((pin_index) * 4U))
 
-#define EF_GPIO_CRH_CFG(pin_index, mode_bits, cnf_bits) \
-    (((uint32_t)(mode_bits) | ((uint32_t)(cnf_bits) << 2U)) << (((pin_index) - 8U) * 4U))
-
 typedef struct {
     uint8_t bmRequestType;
     uint8_t bRequest;
@@ -431,19 +428,11 @@ static void handle_cdc_out(void)
 
 static bool pins_are_initialized(void)
 {
-    const uint32_t pa11_af_pp_high = EF_GPIO_CRH_CFG(11U, 3U, 2U);
-    const uint32_t pa12_af_pp_high = EF_GPIO_CRH_CFG(12U, 3U, 2U);
     const uint32_t pd3_out_od_low = EF_GPIO_CRL_CFG(3U, 2U, 1U);
-    const uint32_t gpioa_mask = GPIO_CRH_CNF11 | GPIO_CRH_MODE11 |
-                                GPIO_CRH_CNF12 | GPIO_CRH_MODE12;
     const uint32_t gpiod_mask = GPIO_CRL_CNF3 | GPIO_CRL_MODE3;
 
-    if ((RCC->APB2ENR & RCC_APB2ENR_IOPAEN) == 0U ||
-        (RCC->APB2ENR & RCC_APB2ENR_IOPDEN) == 0U ||
+    if ((RCC->APB2ENR & RCC_APB2ENR_IOPDEN) == 0U ||
         (RCC->APB1ENR & RCC_APB1ENR_USBEN) == 0U) {
-        return false;
-    }
-    if ((GPIOA->CRH & gpioa_mask) != (pa11_af_pp_high | pa12_af_pp_high)) {
         return false;
     }
     if ((GPIOD->CRL & gpiod_mask) != pd3_out_od_low) {
@@ -454,17 +443,10 @@ static bool pins_are_initialized(void)
 
 void UsbCdc_Init(void)
 {
-    __HAL_RCC_GPIOA_CLK_ENABLE();
     __HAL_RCC_GPIOD_CLK_ENABLE();
     __HAL_RCC_USB_CLK_ENABLE();
 
     GPIO_InitTypeDef gpio = {0};
-    gpio.Pin = USB_DM_Pin | USB_DP_Pin;
-    gpio.Mode = GPIO_MODE_AF_PP;
-    gpio.Pull = GPIO_NOPULL;
-    gpio.Speed = GPIO_SPEED_FREQ_HIGH;
-    HAL_GPIO_Init(GPIOA, &gpio);
-
     gpio.Pin = USB_DISCONNECT_Pin;
     gpio.Mode = GPIO_MODE_OUTPUT_OD;
     gpio.Pull = GPIO_NOPULL;
@@ -473,10 +455,6 @@ void UsbCdc_Init(void)
 
     HAL_GPIO_WritePin(USB_DISCONNECT_GPIO_Port, USB_DISCONNECT_Pin, GPIO_PIN_SET);
     HAL_Delay(20);
-    HAL_GPIO_WritePin(USB_DISCONNECT_GPIO_Port, USB_DISCONNECT_Pin, GPIO_PIN_RESET);
-    if (!pins_are_initialized()) {
-        Error_Handler();
-    }
 
     USB->CNTR = USB_CNTR_FRES;
     USB->CNTR = 0;
@@ -489,6 +467,11 @@ void UsbCdc_Init(void)
     configured = 0;
     tx_busy = 0;
     rx_head = rx_tail = tx_head = tx_tail = 0;
+
+    HAL_GPIO_WritePin(USB_DISCONNECT_GPIO_Port, USB_DISCONNECT_Pin, GPIO_PIN_RESET);
+    if (!pins_are_initialized()) {
+        Error_Handler();
+    }
 }
 
 void UsbCdc_Poll(void)
