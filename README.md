@@ -1,6 +1,29 @@
 # Embedded Final Project
 
-STM32F103 chip-temperature monitor with USB CDC communication, realtime host plotting, LED/buzzer control, filtering, and alarm handling.
+STM32F103 chip-temperature monitor with USB CDC communication, realtime host
+plotting, LED/buzzer control, filtering, and alarm handling.
+
+## Build
+
+Firmware:
+
+```sh
+cmake -S . -B build -G Ninja -DCMAKE_TOOLCHAIN_FILE=cmake/arm-none-eabi-gcc.cmake
+cmake --build build
+```
+
+Host:
+
+```sh
+cd host
+cargo run
+```
+
+Flash:
+
+```sh
+scripts/flash.sh
+```
 
 ## Target Board
 
